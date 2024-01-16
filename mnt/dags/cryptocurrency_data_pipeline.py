@@ -1,3 +1,4 @@
+from datetime import timedelta
 from airflow import DAG
 from airflow.operators.email import EmailOperator
 from airflow.operators.dummy import DummyOperator
@@ -13,13 +14,17 @@ from etl import (
 
 
 default_args = {
-    "owner": "zkan",
-    "start_date": timezone.datetime(2022, 2, 1),
-}
+        "owner": "zkan",
+        "email": ["kan@dataengineercafe.io"],
+        "start_date": timezone.datetime(2022, 2, 1),
+        "retries": 3,
+        "retry_delay": timedelta(minutes=3),
+    }
 with DAG(
     "cryptocurrency_data_pipeline",
     default_args=default_args,
-    schedule_interval=None,
+    schedule_interval="@daily",
+    catchup=False,
 ) as dag:
     
     start = DummyOperator(
@@ -71,20 +76,55 @@ with DAG(
        """,
    )
 
-    merge_import_into_final_table = DummyOperator(
-        task_id="merge_import_into_final_table",
-    )
+    merge_import_into_final_table = PostgresOperator(
+       task_id="merge_import_into_final_table",
+       postgres_conn_id="postgres",
+       sql="""
+           INSERT INTO cryptocurrency (
+               timestamp,
+               open,
+               highest,
+               lowest,
+               closing,
+               volume
+           )
+           SELECT
+               timestamp,
+               open,
+               highest,
+               lowest,
+               closing,
+               volume
+           FROM
+               cryptocurrency_import
+           ON CONFLICT (timestamp)
+           DO UPDATE SET
+               open = EXCLUDED.open,
+               highest = EXCLUDED.highest,
+               lowest = EXCLUDED.lowest,
+               closing = EXCLUDED.closing,
+               volume = EXCLUDED.volume
+       """,
+   )
 
-    clear_import_table = DummyOperator(
-        task_id="clear_import_table",
-    )
+    clear_import_table = PostgresOperator(
+       task_id="clear_import_table",
+       postgres_conn_id="postgres",
+       sql="""
+           DELETE FROM cryptocurrency_import
+       """,
+   )
 
-    notify = DummyOperator(
-        task_id="notify",
-    )
+#     notify = EmailOperator(
+#        task_id="notify",
+#        to=["kan@dataengineercafe.io"],
+#        subject="Loaded data into database successfully on {{ ds }}",
+#        html_content="Your pipeline has loaded data into database successfully",
+#    )
 
     end = DummyOperator(
         task_id="end",
     )
 
-start >> fetch_ohlcv >> download_file >> create_import_table >> load_data_into_database >> create_final_table >> end
+start >> fetch_ohlcv >> download_file >> create_import_table >> load_data_into_database >> create_final_table 
+create_final_table >> merge_import_into_final_table >> clear_import_table  >> end
